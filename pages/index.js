@@ -1,8 +1,5 @@
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
 
-// Colloquial English version
 export default function ComingSoon() {
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-red-600 text-white text-center">
@@ -31,9 +28,9 @@ export default function ComingSoon() {
         animate={{ opacity: 1 }}
         transition={{ delay: 2, duration: 1 }}
       >
-        <Button className="flex items-center gap-2 bg-white text-red-600 px-6 py-2 rounded-xl hover:bg-gray-200">
+        <button className="flex items-center gap-2 bg-white text-red-600 px-6 py-2 rounded-xl hover:bg-gray-200">
           Follow us on X
-        </Button>
+        </button>
       </motion.a>
     </div>
   );
