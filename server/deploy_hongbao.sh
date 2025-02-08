@@ -1,14 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# Create log directory and set log file
+sudo mkdir -p "/var/log/hongbao"
 LOG_DIR="/var/log/hongbao"
 LOG_FILE="$LOG_DIR/deploy_hongbao.log"
 
-sudo mkdir -p "$LOG_DIR"
-
 echo "🔄 Update time: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
-echo "🚀 Starting deployment of HongBao system..." | tee -a "$LOG_FILE"
+echo "🚀 Starting deployment of the HongBao system..." | tee -a "$LOG_FILE"
 
+# 1. Install required components (Docker, Docker Compose, npm)
 if ! command -v docker &>/dev/null; then
     echo "🔧 Installing Docker..." | tee -a "$LOG_FILE"
     sudo apt update && sudo apt install -y docker.io
@@ -22,11 +23,13 @@ if ! command -v npm &>/dev/null; then
     sudo apt install -y nodejs npm
 fi
 
+# 2. Create deployment and backend directories if they don't exist
 sudo mkdir -p /opt/hongbao
 sudo mkdir -p /opt/hongbao/backend
 
+# 3. Check and create default backend files if they don't exist
 if [ ! -f "/opt/hongbao/backend/Dockerfile" ]; then
-    echo "⚠️ /opt/hongbao/backend/Dockerfile does not exist, creating default Dockerfile..." | tee -a "$LOG_FILE"
+    echo "⚠️ /opt/hongbao/backend/Dockerfile not found. Creating a default Dockerfile..." | tee -a "$LOG_FILE"
     sudo tee /opt/hongbao/backend/Dockerfile > /dev/null <<'EOF'
 FROM node:14
 WORKDIR /app
@@ -39,7 +42,7 @@ EOF
 fi
 
 if [ ! -f "/opt/hongbao/backend/package.json" ]; then
-    echo "⚠️ /opt/hongbao/backend/package.json does not exist, creating default package.json..." | tee -a "$LOG_FILE"
+    echo "⚠️ /opt/hongbao/backend/package.json not found. Creating a default package.json..." | tee -a "$LOG_FILE"
     sudo tee /opt/hongbao/backend/package.json > /dev/null <<'EOF'
 {
   "name": "dummy-api",
@@ -56,7 +59,7 @@ EOF
 fi
 
 if [ ! -f "/opt/hongbao/backend/index.js" ]; then
-    echo "⚠️ /opt/hongbao/backend/index.js does not exist, creating default index.js..." | tee -a "$LOG_FILE"
+    echo "⚠️ /opt/hongbao/backend/index.js not found. Creating a default index.js..." | tee -a "$LOG_FILE"
     sudo tee /opt/hongbao/backend/index.js > /dev/null <<'EOF'
 const express = require('express');
 const app = express();
@@ -72,7 +75,8 @@ app.listen(port, () => {
 EOF
 fi
 
-echo "🔧 Creating Docker Compose configuration..." | tee -a "$LOG_FILE"
+# Docker Compose configuration
+echo "🔧 Setting up Docker Compose configuration..." | tee -a "$LOG_FILE"
 sudo tee /opt/hongbao/docker-compose.yml > /dev/null <<'EOF'
 version: '3.8'
 services:
@@ -98,6 +102,7 @@ services:
     image: zokrates/zokrates:${ZOKRATES_VERSION:-latest}
     container_name: hongbao-zokrates
     restart: always
+    command: tail -f /dev/null
     networks:
       - hongbao_network
   
@@ -139,37 +144,55 @@ networks:
     driver: bridge
 EOF
 
+# Start containers
 echo "🚀 Starting all containers..." | tee -a "$LOG_FILE"
 cd /opt/hongbao
-sudo docker-compose up -d || { echo "❌ Failed to start containers, please check logs" | tee -a "$LOG_FILE"; exit 1; }
+sudo docker-compose up -d || { echo "❌ Failed to start containers. Please check the log." | tee -a "$LOG_FILE"; exit 1; }
 
-echo "🔍 Verifying services status..." | tee -a "$LOG_FILE"
+echo "🔍 Verifying service status..." | tee -a "$LOG_FILE"
 sudo docker ps | tee -a "$LOG_FILE"
 
-echo "🔧 Creating periodic service status check script..." | tee -a "$LOG_FILE"
-sudo tee /opt/hongbao/check_services.sh > /dev/null <<'EOF'
+# Create monitoring script
+echo "🔧 Creating monitoring script monitor_hongbao.sh ..." | tee -a "$LOG_FILE"
+sudo tee /opt/hongbao/monitor_hongbao.sh > /dev/null <<'EOF'
 #!/bin/bash
-containers=("hongbao-api" "hongbao-hardhat" "hongbao-zokrates" "hongbao-mongodb" "hongbao-redis")
-for container in "${containers[@]}"
-do
-  status=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
-  if [ "$status" != "running" ]; then
-    echo "$(date): Container $container is not running, restarting..."
-    docker restart "$container"
-  else
-    health=$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || echo "no-health")
-    if [ "$health" != "healthy" ] && [ "$health" != "no-health" ]; then
-      echo "$(date): Container $container is running but unhealthy (status: $health), restarting..."
-      docker restart "$container"
-    fi
-  fi
+set -euo pipefail
+LOG_FILE="/var/log/hongbao/monitor_hongbao.log"
+while true; do
+    desired_services=("hongbao-mongodb" "hongbao-redis" "hongbao-zokrates" "hongbao-hardhat" "hongbao-api")
+    for service in "${desired_services[@]}"; do
+        if ! docker ps --format '{{.Names}}' | grep -q "^${service}\$"; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): ${service} is not running, attempting to restart..." >> "$LOG_FILE"
+            cd /opt/hongbao
+            docker-compose restart "${service}"
+        fi
+    done
+    sleep 60
 done
 EOF
-sudo chmod +x /opt/hongbao/check_services.sh
 
-echo "🔧 Creating Cron Job for periodic service status check..." | tee -a "$LOG_FILE"
-sudo tee /etc/cron.d/hongbao_check > /dev/null <<'EOF'
-*/5 * * * * root /opt/hongbao/check_services.sh >> /var/log/hongbao/service_check.log 2>&1
+sudo chmod +x /opt/hongbao/monitor_hongbao.sh
+
+# Create systemd service for monitoring script
+echo "🔧 Creating systemd service hongbao-monitor.service ..." | tee -a "$LOG_FILE"
+sudo tee /etc/systemd/system/hongbao-monitor.service > /dev/null <<'EOF'
+[Unit]
+Description=HongBao Monitor Service
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/hongbao/monitor_hongbao.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-echo "✅ HongBao system deployment completed!" | tee -a "$LOG_FILE"
+sudo systemctl daemon-reload
+sudo systemctl enable hongbao-monitor.service
+sudo systemctl start hongbao-monitor.service
+
+echo "✅ HongBao system deployed successfully and monitoring service is running!" | tee -a "$LOG_FILE"
